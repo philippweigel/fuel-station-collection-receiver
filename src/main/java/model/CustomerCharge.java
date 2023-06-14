@@ -48,4 +48,14 @@ public class CustomerCharge {
     public void setUid(String uid) {
         this.uid = uid;
     }
+
+    @Override
+    public String toString() {
+        return "CustomerCharge{" +
+                "customerId=" + customerId +
+                ", stationId=" + stationId +
+                ", sumKwh=" + sumKwh +
+                ", uid='" + uid + '\'' +
+                '}';
+    }
 }

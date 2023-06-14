@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
 import model.CompleteData;
 import model.CustomerCharge;
+import model.CustomerData;
 import model.Job;
 import service.ObjectMapperService;
 import service.RabbitMQService;
@@ -20,10 +21,12 @@ import static service.RabbitMQService.JOB_START_QUEUE_NAME;
 public class MessageHandler {
     private final ObjectMapperService objectMapperService = new ObjectMapperService();
     private final Map<String, Job> jobsMap = new HashMap<>();
-    private final Map<String, List<CustomerCharge>> customerChargesMap = new HashMap<>();
+    private final Map<String, CustomerData> customerChargesMap = new HashMap<>();
+    private final Map<String, Integer> messageCountMap = new HashMap<>();
 
     public Map<String, Double> groupCustomerChargesByUid(List<CustomerCharge> customerCharges) {
         return customerCharges.stream()
+                .peek(customerCharge -> System.out.println(customerCharge.toString()))
                 .collect(Collectors.groupingBy(CustomerCharge::getUid,
                         Collectors.summingDouble(CustomerCharge::getSumKwh)));
     }
@@ -74,12 +77,32 @@ public class MessageHandler {
     }
 
     private void handleCustomerCharge(Channel channel, RabbitMQService rabbitMQService, CustomerCharge customerCharge) {
-        String jobId = customerCharge.getUid();
-        customerChargesMap.computeIfAbsent(jobId, k-> new ArrayList<>()).add(customerCharge);
-        Optional.ofNullable(jobsMap.get(jobId)).ifPresent(job -> {
-            if (job.getExpectedMessageCount() == customerChargesMap.get(jobId).size()) {
+        String uid = customerCharge.getUid();
+        customerChargesMap.compute(uid, (key, value) -> {
+            if (value == null) {
+                return new CustomerData(customerCharge.getCustomerId(), customerCharge.getSumKwh());
+            } else {
+                value.addSumKwh(customerCharge.getSumKwh());
+                return value;
+            }
+        });
+        Optional.ofNullable(jobsMap.get(uid)).ifPresent(job -> {
+            if (job.getExpectedMessageCount() == customerChargesMap.size()) {
                 try {
-                    sendCompleteData(channel, rabbitMQService, customerCharge);
+                    sendCompleteData(channel, rabbitMQService, uid);
+                } catch (JsonProcessingException e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
+        // Increment message count
+        messageCountMap.put(uid, messageCountMap.getOrDefault(uid, 0) + 1);
+
+        Optional.ofNullable(jobsMap.get(uid)).ifPresent(job -> {
+            if (job.getExpectedMessageCount() == messageCountMap.get(uid)) {
+                try {
+                    sendCompleteData(channel, rabbitMQService, uid);
                 } catch (JsonProcessingException e) {
                     e.printStackTrace();
                 }
@@ -88,9 +111,9 @@ public class MessageHandler {
     }
 
 
-    private void sendCompleteData(Channel channel, RabbitMQService rabbitMQService, CustomerCharge customerCharge) throws JsonProcessingException {
-        Map<String, Double> groupedData = groupCustomerChargesByUid(Collections.singletonList(customerCharge));
-        CompleteData completeData = mapToCompleteData(Collections.singletonList(customerCharge), groupedData);
+    private void sendCompleteData(Channel channel, RabbitMQService rabbitMQService, String uid) throws JsonProcessingException {
+        CustomerData customerData = customerChargesMap.get(uid);
+        CompleteData completeData = new CompleteData(uid, customerData.getCustomerId(), customerData.getSumKwh());
         sendMessage(channel, rabbitMQService, completeData);
     }
 }
